@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local LLM</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
+
+    #settings-panel { padding: 20px; max-width: 600px; margin: 0 auto; }
+
+    h1 { font-size: 20px; margin-bottom: 4px; color: #fff; }
+    .subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
+    h2 { font-size: 12px; color: #666; margin: 24px 0 10px;
+         text-transform: uppercase; letter-spacing: 0.08em; }
+
+    .field { margin-bottom: 12px; }
+    label { display: block; font-size: 13px; color: #888; margin-bottom: 4px; }
+    input[type="text"], input[type="password"], textarea {
+      width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a;
+      border-radius: 8px; padding: 10px 12px; color: #e0e0e0;
+      font-size: 14px; outline: none; font-family: inherit;
+    }
+    input[type="text"]:focus, input[type="password"]:focus, textarea:focus {
+      border-color: #444;
+    }
+    textarea { resize: vertical; min-height: 56px; }
+
+    .option-card { background: #111; border: 1px solid #1e1e1e;
+                   border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+    .option-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .option-title { font-size: 14px; font-weight: 600; color: #bbb; }
+
+    .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .checkbox-row label { margin: 0; color: #888; font-size: 13px; }
+    input[type="checkbox"] { width: 18px; height: 18px; accent-color: #4a9eff; flex-shrink: 0; }
+
+    .save-btn { width: 100%; padding: 14px; background: #4a9eff; color: #fff;
+                border: none; border-radius: 10px; font-size: 16px; font-weight: 600;
+                cursor: pointer; margin-top: 24px; }
+    .save-btn:active { background: #3a8eef; }
+    .status { text-align: center; font-size: 13px; color: #4a9eff;
+              margin-top: 12px; min-height: 20px; padding-bottom: 40px; }
+
+    #running-panel { display: none; padding: 40px 20px; text-align: center; }
+    #running-panel h1 { margin-bottom: 10px; }
+    #running-panel p { color: #666; font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
+    .edit-link { color: #4a9eff; font-size: 14px; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+<div id="settings-panel">
+  <h1>Local LLM</h1>
+  <p class="subtitle">Configure settings below, then tap Save &amp; Start.</p>
+
+  <h2>Connection</h2>
+  <div class="field">
+    <label>Chat Endpoint</label>
+    <input type="text" id="chat_endpoint"
+           placeholder="https://your-openwebui.example.com/api/chat/completions" />
+  </div>
+  <div class="field">
+    <label>Chats Endpoint (for saving history)</label>
+    <input type="text" id="chats_endpoint"
+           placeholder="https://your-openwebui.example.com/api/v1/chats/new" />
+  </div>
+  <div class="field">
+    <label>STT Endpoint</label>
+    <input type="text" id="stt_endpoint"
+           placeholder="https://your-openwebui.example.com/api/v1/audio/transcriptions" />
+  </div>
+  <div class="field">
+    <label>API Key</label>
+    <input type="password" id="api_key" placeholder="your-api-key" />
+  </div>
+  <div class="field">
+    <label>Router Model</label>
+    <input type="text" id="router_model" placeholder="your-router-model" />
+  </div>
+
+  <h2>Menu Options (up to 5)</h2>
+  <div id="options-container"></div>
+
+  <button class="save-btn" onclick="saveSettings()">Save &amp; Start</button>
+  <div class="status" id="status"></div>
+</div>
+
+<div id="running-panel">
+  <h1>Local LLM</h1>
+  <p>App is running on your glasses.<br/>Use your G2s to interact.</p>
+  <span class="edit-link" onclick="showSettings()">⚙ Edit Settings</span>
+</div>
+
+<script>
+  // Build 5 option cards
+  const optContainer = document.getElementById('options-container')
+  for (let i = 0; i < 5; i++) {
+    optContainer.innerHTML += `
+      <div class="option-card">
+        <div class="option-header">
+          <input type="checkbox" id="opt_enabled_${i}" />
+          <span class="option-title">Option ${i + 1}</span>
+        </div>
+        <div class="field">
+          <label>Router Key (must match router model output exactly)</label>
+          <input type="text" id="opt_key_${i}" placeholder="MENU_OPTION_${i + 1}" />
+        </div>
+        <div class="field">
+          <label>Display Label (shown on glasses)</label>
+          <textarea id="opt_label_${i}"
+            placeholder="Option ${i + 1}&#10;Speak your query."></textarea>
+        </div>
+        <div class="field">
+          <label>Model</label>
+          <input type="text" id="opt_model_${i}" placeholder="model-name" />
+        </div>
+        <div class="checkbox-row">
+          <input type="checkbox" id="opt_multiturn_${i}" />
+          <label for="opt_multiturn_${i}">Multi-turn conversation</label>
+        </div>
+        <div class="checkbox-row">
+          <input type="checkbox" id="opt_savechat_${i}" />
+          <label for="opt_savechat_${i}">Save chat to open-webui</label>
+        </div>
+      </div>`
+  }
+
+  function getFormValues() {
+    const options = []
+    for (let i = 0; i < 5; i++) {
+      options.push({
+        enabled:   document.getElementById(`opt_enabled_${i}`).checked,
+        key:       document.getElementById(`opt_key_${i}`).value.trim().toUpperCase(),
+        label:     document.getElementById(`opt_label_${i}`).value,
+        model:     document.getElementById(`opt_model_${i}`).value.trim(),
+        multiTurn: document.getElementById(`opt_multiturn_${i}`).checked,
+        saveChat:  document.getElementById(`opt_savechat_${i}`).checked,
+      })
+    }
+    return {
+      chatEndpoint:  document.getElementById('chat_endpoint').value.trim(),
+      chatsEndpoint: document.getElementById('chats_endpoint').value.trim(),
+      sttEndpoint:   document.getElementById('stt_endpoint').value.trim(),
+      apiKey:        document.getElementById('api_key').value.trim(),
+      routerModel:   document.getElementById('router_model').value.trim(),
+      options,
+    }
+  }
+
+  function populateForm(cfg) {
+    document.getElementById('chat_endpoint').value  = cfg.chatEndpoint  || ''
+    document.getElementById('chats_endpoint').value = cfg.chatsEndpoint || ''
+    document.getElementById('stt_endpoint').value   = cfg.sttEndpoint   || ''
+    document.getElementById('api_key').value        = cfg.apiKey        || ''
+    document.getElementById('router_model').value   = cfg.routerModel   || ''
+    const opts = cfg.options || []
+    for (let i = 0; i < 5; i++) {
+      const o = opts[i] || {}
+      document.getElementById(`opt_enabled_${i}`).checked   = o.enabled   || false
+      document.getElementById(`opt_key_${i}`).value         = o.key       || `MENU_OPTION_${i + 1}`
+      document.getElementById(`opt_label_${i}`).value       = o.label     || ''
+      document.getElementById(`opt_model_${i}`).value       = o.model     || ''
+      document.getElementById(`opt_multiturn_${i}`).checked = o.multiTurn || false
+      document.getElementById(`opt_savechat_${i}`).checked  = o.saveChat  || false
+    }
+  }
+
+  function showSettings() {
+    document.getElementById('settings-panel').style.display = 'block'
+    document.getElementById('running-panel').style.display  = 'none'
+  }
+
+  function showRunning() {
+    document.getElementById('settings-panel').style.display = 'none'
+    document.getElementById('running-panel').style.display  = 'block'
+  }
+
+  async function saveSettings() {
+    const cfg    = getFormValues()
+    const status = document.getElementById('status')
+    status.textContent = 'Saving…'
+    try {
+      if (window.__saveSettings) {
+        await window.__saveSettings(cfg)
+        status.textContent = 'Saved!'
+        setTimeout(() => showRunning(), 600)
+      } else {
+        status.textContent = 'Bridge not ready — please wait a moment.'
+      }
+    } catch (e) {
+      status.textContent = 'Error: ' + e.message
+    }
+  }
+
+  window.__populateForm = populateForm
+  window.__showSettings = showSettings
+  window.__showRunning  = showRunning
+</script>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

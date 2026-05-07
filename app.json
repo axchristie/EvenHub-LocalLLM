@@ -1,0 +1,21 @@
+{
+  "package_id": "com.alexc.local-llm",
+  "edition": "202605",
+  "name": "Local LLM",
+  "version": "0.5.0",
+  "min_app_version": "2.0.0",
+  "min_sdk_version": "0.0.10",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "g2-microphone",
+      "desc": "Captures voice input for speech-to-text and menu navigation."
+    },
+    {
+      "name": "network",
+      "desc": "Sends voice audio and text queries to the user's self-configured open-webui instance over HTTPS. The endpoint is entered by the user in the app settings and is not fixed at build time.",
+      "whitelist": []
+    }
+  ],
+  "supported_languages": ["en"]
+}
