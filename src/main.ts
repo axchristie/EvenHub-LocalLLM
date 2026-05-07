@@ -250,7 +250,7 @@ async function startMenuListening(): Promise<void> {
   activeOption = null
   conversationHistory = []
   state = 'menu_listening'
-  await setContent('Local LLM')
+  await setContent('Local LLM\nSpeak a menu option')
   await setHud('■ Listening')
   await bridge.audioControl(true)
 }
