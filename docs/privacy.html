@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local LLM — Privacy Policy</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 680px; margin: 40px auto;
+           padding: 0 20px 60px; color: #222; line-height: 1.7; }
+    h1 { font-size: 24px; margin-bottom: 4px; }
+    .meta { color: #888; font-size: 14px; margin-bottom: 40px; }
+    h2 { font-size: 17px; margin-top: 36px; }
+    p, li { font-size: 15px; }
+    ul { padding-left: 20px; }
+    a { color: #0070f3; }
+  </style>
+</head>
+<body>
+
+<h1>Local LLM — Privacy Policy</h1>
+<p class="meta">Last updated: May 2026</p>
+
+<p>Local LLM is an Even Hub app for the Even Realities G2 smart glasses. This policy explains what data the app accesses, where it goes, and what the developer does with it.</p>
+
+<h2>Summary</h2>
+<p>The developer of Local LLM collects no data from users. The app does not communicate with any server operated by the developer. All data stays between your device and your own self-hosted infrastructure.</p>
+
+<h2>Microphone access</h2>
+<p>Local LLM requests access to the G2 microphone to capture voice input. Recorded audio is used exclusively to:</p>
+<ul>
+  <li>Transcribe speech to text via a Whisper speech-to-text model running on the user's own server</li>
+  <li>Route voice commands to the appropriate menu option via a language model running on the user's own server</li>
+  <li>Send voice queries to a language model running on the user's own server</li>
+</ul>
+<p>Audio is sent directly from your device to your self-hosted open-webui instance over your private Tailscale network. Audio is never sent to any server operated by the app developer, and is never stored by the app itself.</p>
+
+<h2>Network access</h2>
+<p>Local LLM sends HTTPS requests to endpoints configured by the user in the app settings. These endpoints point exclusively to the user's own self-hosted open-webui instance, accessible via their private Tailscale network. The app does not communicate with any fixed external server, analytics service, advertising network, or any server operated by the developer.</p>
+
+<h2>Settings and local storage</h2>
+<p>The app stores user-configured settings (API endpoints, API key, model names, and menu option configuration) in local storage on the user's device via the Even Hub SDK. This data never leaves the device except as part of the network requests described above.</p>
+
+<h2>Chat history</h2>
+<p>If the user enables the "Save chat" option for a menu option, conversation transcripts and model replies are saved to the user's own open-webui instance. This data is stored on the user's own server and is subject to the user's own data practices. The developer has no access to this data.</p>
+
+<h2>Children's privacy</h2>
+<p>Local LLM is not directed at children under the age of 13 and does not knowingly collect any information from children.</p>
+
+<h2>Changes to this policy</h2>
+<p>If this policy changes materially, the updated version will be posted at this URL with a revised date.</p>
+
+<h2>Contact</h2>
+<p>Questions about this privacy policy can be directed to the developer via the Even Hub app listing or the project's GitHub repository.</p>
+
+</body>
+</html>
