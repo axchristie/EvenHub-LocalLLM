@@ -28,10 +28,10 @@ interface AppConfig {
 const STORAGE_KEY = 'app_config'
 
 // Silence detection
-const SILENCE_DURATION_CHUNKS   = 15
-const MIN_CHUNKS                 = 10
-const AMBIENT_CALIBRATION_CHUNKS = 10
-const SILENCE_MULTIPLIER         = 2.5
+const SILENCE_DURATION_CHUNKS   = 15    // consecutive silent chunks before auto-stop (~1.5s)
+const MIN_CHUNKS                 = 10   // recordings shorter than this are discarded (~1s)
+const AMBIENT_CALIBRATION_CHUNKS = 10   // first ~1s used to establish ambient baseline
+const SILENCE_MULTIPLIER         = 2.5  // silence threshold = ambient RMS x this value
 
 // Layout - 576x288 canvas
 // Content layer occupies the top portion; pill sits below with a small gap.
@@ -57,8 +57,13 @@ let conversationHistory: Message[] = []
 
 const pcmChunks: Uint8Array[] = []
 let silentChunkCount = 0
-let ambientRmsSum    = 0
-let ambientRmsCount  = 0
+
+// Ambient noise baseline — measured once per session during menu listening,
+// then reused for all subsequent turns. Prevents speech on turn 2+ from
+// corrupting the ambient measurement and causing premature cutoff.
+let ambientRmsBaseline: number | null = null
+let ambientRmsSumTemp   = 0
+let ambientRmsCountTemp = 0
 
 // -- Bridge init ---------------------------------------------------------------
 
@@ -163,27 +168,18 @@ async function setHud(text: string): Promise<void> {
   )
 }
 
-// Show reply in content layer with hint preserved at the tail.
-// If the reply is long the body is truncated but the hint is always visible.
-async function setReply(reply: string, hint: string): Promise<void> {
-  const encoder   = new TextEncoder()
-  const decoder   = new TextDecoder()
-  const hintBytes = encoder.encode(hint)
-  const bodyBytes = encoder.encode(reply)
-  const maxBody   = 980 - hintBytes.length
-  const body      = bodyBytes.length <= maxBody
-    ? reply
-    : decoder.decode(bodyBytes.slice(0, maxBody)) + '...'
-  await bridge.textContainerUpgrade(
-    new TextContainerUpgrade({ containerID: 1, containerName: 'content', content: body + hint }),
-  )
+// Reset per-recording state only — preserves ambient baseline across turns
+function resetAudio(): void {
+  pcmChunks.length  = 0
+  silentChunkCount  = 0
+  ambientRmsSumTemp  = 0
+  ambientRmsCountTemp = 0
 }
 
-function resetAudio(): void {
-  pcmChunks.length = 0
-  silentChunkCount = 0
-  ambientRmsSum    = 0
-  ambientRmsCount  = 0
+// Reset everything including the ambient baseline — called on return to menu
+function resetSession(): void {
+  resetAudio()
+  ambientRmsBaseline = null
 }
 
 function buildMenuOptions(options: MenuOptionConfig[]): Record<string, MenuOptionConfig> {
@@ -246,17 +242,17 @@ if (existingCfg) {
 // -- Glasses experience -------------------------------------------------------
 
 async function startMenuListening(): Promise<void> {
-  resetAudio()
+  resetSession()
   activeOption = null
   conversationHistory = []
   state = 'menu_listening'
-  await setContent('Local LLM\nSpeak a menu option')
+  await setContent('Local LLM')
   await setHud('■ Listening')
   await bridge.audioControl(true)
 }
 
 async function startQueryListening(): Promise<void> {
-  resetAudio()
+  resetAudio()   // preserve ambient baseline, reset per-recording state only
   state = 'query_listening'
   await setContent(activeOption!.label)
   await setHud('■ Listening')
@@ -396,11 +392,11 @@ async function processQueryAudio(): Promise<void> {
     state = 'response'
 
     if (activeOption!.multiTurn) {
-      await setReply(reply, '\n\n● Follow up  ▲ Menu  ●● Exit')
+      await setContent(reply)
       await setHud('● Tap · ▲ Scroll up · ●● Exit')
     } else {
       if (activeOption!.saveChat) await saveChat(conversationHistory, activeOption!.model)
-      await setReply(reply, '\n\n● Start over  ●● Exit')
+      await setContent(reply)
       await setHud('● Tap · ●● Exit')
     }
   } catch (err) {
@@ -430,6 +426,7 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
   const sysType  = event.sysEvent?.eventType ?? null
   const textType = event.textEvent?.eventType ?? null
 
+  // Double-tap exits from any state
   if (sysType === OsEventTypeList.DOUBLE_CLICK_EVENT || textType === OsEventTypeList.DOUBLE_CLICK_EVENT) {
     if (state === 'menu_listening' || state === 'query_listening') {
       await bridge.audioControl(false)
@@ -444,6 +441,9 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
   if (sysType === OsEventTypeList.SYSTEM_EXIT_EVENT || sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT) {
     if (state === 'menu_listening' || state === 'query_listening') {
       await bridge.audioControl(false)
+    }
+    if (activeOption?.multiTurn && activeOption?.saveChat && conversationHistory.length > 0) {
+      await saveChat(conversationHistory, activeOption.model)
     }
     unsubscribe()
     return
@@ -463,18 +463,26 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     return
   }
 
+  // Audio accumulation and adaptive silence detection
   if ((state === 'menu_listening' || state === 'query_listening') && event.audioEvent?.audioPcm) {
     const chunk    = new Uint8Array(event.audioEvent.audioPcm)
     const chunkRms = rms(chunk)
     pcmChunks.push(chunk)
 
-    if (pcmChunks.length <= AMBIENT_CALIBRATION_CHUNKS) {
-      ambientRmsSum += chunkRms
-      ambientRmsCount++
+    // Calibration phase: runs only until baseline is established for this session.
+    // The baseline is locked after the first AMBIENT_CALIBRATION_CHUNKS chunks
+    // and reused for all subsequent turns, so turn 2+ speech does not corrupt it.
+    if (ambientRmsBaseline === null) {
+      ambientRmsSumTemp += chunkRms
+      ambientRmsCountTemp++
+      if (ambientRmsCountTemp >= AMBIENT_CALIBRATION_CHUNKS) {
+        ambientRmsBaseline = ambientRmsSumTemp / ambientRmsCountTemp
+        console.log('ambient baseline set:', ambientRmsBaseline.toFixed(0))
+      }
       return
     }
 
-    const dynamicThreshold = (ambientRmsSum / ambientRmsCount) * SILENCE_MULTIPLIER
+    const dynamicThreshold = ambientRmsBaseline * SILENCE_MULTIPLIER
     if (chunkRms < dynamicThreshold) {
       silentChunkCount++
       if (silentChunkCount >= SILENCE_DURATION_CHUNKS) {
@@ -487,6 +495,7 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     return
   }
 
+  // Scroll up in response state: return to menu
   if (state === 'response' && textType === OsEventTypeList.SCROLL_TOP_EVENT) {
     await returnToMenu()
     return
