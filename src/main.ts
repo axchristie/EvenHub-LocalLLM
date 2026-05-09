@@ -17,28 +17,28 @@ interface MenuOptionConfig {
 }
 
 interface AppConfig {
-  chatEndpoint:  string
-  chatsEndpoint: string
-  sttEndpoint:   string
-  apiKey:        string
-  routerModel:   string
-  options:       MenuOptionConfig[]
+  chatEndpoint:   string
+  chatsEndpoint:  string
+  sttEndpoint:    string
+  apiKey:         string
+  routerModel:    string
+  manualStop:     boolean
+  options:        MenuOptionConfig[]
 }
 
 const STORAGE_KEY = 'app_config'
 
 // Silence detection
-const SILENCE_DURATION_CHUNKS   = 15    // consecutive silent chunks before auto-stop (~1.5s)
+const SILENCE_DURATION_CHUNKS   = 20    // consecutive silent chunks before auto-stop (~2s)
 const MIN_CHUNKS                 = 10   // recordings shorter than this are discarded (~1s)
 const AMBIENT_CALIBRATION_CHUNKS = 10   // first ~1s used to establish ambient baseline
-const SILENCE_MULTIPLIER         = 2.5  // silence threshold = ambient RMS x this value
+const SILENCE_MULTIPLIER         = 4.0  // raised from 2.5 - gives more headroom for quiet speech
 
 // Layout - 576x288 canvas
-// Content layer occupies the top portion; pill sits below with a small gap.
 const CONTENT_HEIGHT = 220
 const GAP            = 4
-const PILL_Y         = CONTENT_HEIGHT + GAP   // 224
-const PILL_HEIGHT    = 60                      // 224 + 60 = 284, within 288px canvas
+const PILL_Y         = CONTENT_HEIGHT + GAP
+const PILL_HEIGHT    = 60
 // -----------------------------------------------------------------------------
 
 type Message  = { role: 'user' | 'assistant'; content: string }
@@ -58,9 +58,7 @@ let conversationHistory: Message[] = []
 const pcmChunks: Uint8Array[] = []
 let silentChunkCount = 0
 
-// Ambient noise baseline — measured once per session during menu listening,
-// then reused for all subsequent turns. Prevents speech on turn 2+ from
-// corrupting the ambient measurement and causing premature cutoff.
+// Ambient noise baseline - measured once per session, reused across all turns
 let ambientRmsBaseline: number | null = null
 let ambientRmsSumTemp   = 0
 let ambientRmsCountTemp = 0
@@ -69,14 +67,10 @@ let ambientRmsCountTemp = 0
 
 const bridge = await waitForEvenAppBridge()
 
-// Two-container stacked layout:
-//   Container 1 - content layer: top 220px, isEventCapture=1, scrollable
-//   Container 2 - pill HUD:      bottom strip below a 4px gap, no event capture
 await bridge.createStartUpPageContainer(
   new CreateStartUpPageContainer({
     containerTotalNum: 2,
     textObject: [
-      // Content layer - scrollable reading area
       new TextContainerProperty({
         xPosition:     0,
         yPosition:     0,
@@ -91,7 +85,6 @@ await bridge.createStartUpPageContainer(
         content:       'Loading...',
         isEventCapture: 1,
       }),
-      // Pill HUD - status and hints, always visible below content
       new TextContainerProperty({
         xPosition:     8,
         yPosition:     PILL_Y,
@@ -148,7 +141,6 @@ function buildWav(chunks: Uint8Array[]): Blob {
   return new Blob([header, pcm], { type: 'audio/wav' })
 }
 
-// Update the content layer (container 1)
 async function setContent(text: string): Promise<void> {
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
@@ -161,22 +153,26 @@ async function setContent(text: string): Promise<void> {
   )
 }
 
-// Update the pill HUD (container 2)
 async function setHud(text: string): Promise<void> {
   await bridge.textContainerUpgrade(
     new TextContainerUpgrade({ containerID: 2, containerName: 'hud', content: text }),
   )
 }
 
-// Reset per-recording state only — preserves ambient baseline across turns
+// Returns the appropriate listening pill text based on manual stop setting
+function listeningHud(): string {
+  return cfg?.manualStop
+    ? '■ Listening  ● Stop'
+    : '■ Listening'
+}
+
 function resetAudio(): void {
-  pcmChunks.length  = 0
-  silentChunkCount  = 0
-  ambientRmsSumTemp  = 0
+  pcmChunks.length    = 0
+  silentChunkCount    = 0
+  ambientRmsSumTemp   = 0
   ambientRmsCountTemp = 0
 }
 
-// Reset everything including the ambient baseline — called on return to menu
 function resetSession(): void {
   resetAudio()
   ambientRmsBaseline = null
@@ -247,15 +243,15 @@ async function startMenuListening(): Promise<void> {
   conversationHistory = []
   state = 'menu_listening'
   await setContent('Local LLM')
-  await setHud('■ Listening')
+  await setHud(listeningHud())
   await bridge.audioControl(true)
 }
 
 async function startQueryListening(): Promise<void> {
-  resetAudio()   // preserve ambient baseline, reset per-recording state only
+  resetAudio()
   state = 'query_listening'
   await setContent(activeOption!.label)
-  await setHud('■ Listening')
+  await setHud(listeningHud())
   await bridge.audioControl(true)
 }
 
@@ -463,15 +459,17 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     return
   }
 
-  // Audio accumulation and adaptive silence detection
+  // Audio accumulation — runs in both auto and manual stop modes
   if ((state === 'menu_listening' || state === 'query_listening') && event.audioEvent?.audioPcm) {
     const chunk    = new Uint8Array(event.audioEvent.audioPcm)
     const chunkRms = rms(chunk)
     pcmChunks.push(chunk)
 
-    // Calibration phase: runs only until baseline is established for this session.
-    // The baseline is locked after the first AMBIENT_CALIBRATION_CHUNKS chunks
-    // and reused for all subsequent turns, so turn 2+ speech does not corrupt it.
+    // In manual stop mode, skip silence detection entirely —
+    // recording runs until the user taps to stop
+    if (cfg?.manualStop) return
+
+    // Calibration phase: runs until baseline is established for this session
     if (ambientRmsBaseline === null) {
       ambientRmsSumTemp += chunkRms
       ambientRmsCountTemp++
@@ -504,6 +502,14 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
   const isTap = (sysType ?? 0) === OsEventTypeList.CLICK_EVENT
   if (!isTap) return
 
+  // Manual stop: tap ends recording while listening
+  if (cfg?.manualStop && (state === 'menu_listening' || state === 'query_listening')) {
+    if (state === 'menu_listening') await processMenuAudio()
+    else await processQueryAudio()
+    return
+  }
+
+  // Response state: tap navigates
   if (state === 'response') {
     if (activeOption?.multiTurn) {
       await startQueryListening()

@@ -27,14 +27,14 @@
     }
     textarea { resize: vertical; min-height: 56px; }
 
+    .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .checkbox-row label { margin: 0; color: #888; font-size: 13px; }
+    input[type="checkbox"] { width: 18px; height: 18px; accent-color: #4a9eff; flex-shrink: 0; }
+
     .option-card { background: #111; border: 1px solid #1e1e1e;
                    border-radius: 10px; padding: 14px; margin-bottom: 10px; }
     .option-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
     .option-title { font-size: 14px; font-weight: 600; color: #bbb; }
-
-    .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-    .checkbox-row label { margin: 0; color: #888; font-size: 13px; }
-    input[type="checkbox"] { width: 18px; height: 18px; accent-color: #4a9eff; flex-shrink: 0; }
 
     .save-btn { width: 100%; padding: 14px; background: #4a9eff; color: #fff;
                 border: none; border-radius: 10px; font-size: 16px; font-weight: 600;
@@ -47,6 +47,8 @@
     #running-panel h1 { margin-bottom: 10px; }
     #running-panel p { color: #666; font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
     .edit-link { color: #4a9eff; font-size: 14px; cursor: pointer; }
+
+    .hint { font-size: 12px; color: #555; margin-top: 4px; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -80,6 +82,13 @@
     <input type="text" id="router_model" placeholder="your-router-model" />
   </div>
 
+  <h2>Recording</h2>
+  <div class="checkbox-row">
+    <input type="checkbox" id="manual_stop" />
+    <label for="manual_stop">Manual stop — tap to end recording instead of auto-detecting silence</label>
+  </div>
+  <p class="hint">Enable this if silence detection cuts off your speech too early. When enabled, a tap gesture ends the current recording. Auto-detection is recommended in quiet environments; manual stop works better in noisy ones.</p>
+
   <h2>Menu Options (up to 5)</h2>
   <div id="options-container"></div>
 
@@ -94,7 +103,6 @@
 </div>
 
 <script>
-  // Build 5 option cards
   const optContainer = document.getElementById('options-container')
   for (let i = 0; i < 5; i++) {
     optContainer.innerHTML += `
@@ -145,6 +153,7 @@
       sttEndpoint:   document.getElementById('stt_endpoint').value.trim(),
       apiKey:        document.getElementById('api_key').value.trim(),
       routerModel:   document.getElementById('router_model').value.trim(),
+      manualStop:    document.getElementById('manual_stop').checked,
       options,
     }
   }
@@ -155,6 +164,7 @@
     document.getElementById('stt_endpoint').value   = cfg.sttEndpoint   || ''
     document.getElementById('api_key').value        = cfg.apiKey        || ''
     document.getElementById('router_model').value   = cfg.routerModel   || ''
+    document.getElementById('manual_stop').checked  = cfg.manualStop    || false
     const opts = cfg.options || []
     for (let i = 0; i < 5; i++) {
       const o = opts[i] || {}
@@ -180,7 +190,7 @@
   async function saveSettings() {
     const cfg    = getFormValues()
     const status = document.getElementById('status')
-    status.textContent = 'Saving…'
+    status.textContent = 'Saving...'
     try {
       if (window.__saveSettings) {
         await window.__saveSettings(cfg)
