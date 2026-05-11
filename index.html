@@ -15,7 +15,7 @@
     h2 { font-size: 12px; color: #666; margin: 24px 0 10px;
          text-transform: uppercase; letter-spacing: 0.08em; }
 
-    .field { margin-bottom: 12px; }
+    .field { margin-bottom: 14px; }
     label { display: block; font-size: 13px; color: #888; margin-bottom: 4px; }
     input[type="text"], input[type="password"], textarea {
       width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a;
@@ -30,6 +30,16 @@
     .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .checkbox-row label { margin: 0; color: #888; font-size: 13px; }
     input[type="checkbox"] { width: 18px; height: 18px; accent-color: #4a9eff; flex-shrink: 0; }
+
+    .slider-row { margin-bottom: 14px; }
+    .slider-label { display: flex; justify-content: space-between;
+                    font-size: 13px; color: #888; margin-bottom: 6px; }
+    .slider-label span { color: #4a9eff; font-weight: 600; }
+    input[type="range"] { width: 100%; accent-color: #4a9eff; }
+    .slider-ends { display: flex; justify-content: space-between;
+                   font-size: 11px; color: #444; margin-top: 3px; }
+
+    .hint { font-size: 12px; color: #555; margin-top: 4px; line-height: 1.5; margin-bottom: 14px; }
 
     .option-card { background: #111; border: 1px solid #1e1e1e;
                    border-radius: 10px; padding: 14px; margin-bottom: 10px; }
@@ -48,7 +58,9 @@
     #running-panel p { color: #666; font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
     .edit-link { color: #4a9eff; font-size: 14px; cursor: pointer; }
 
-    .hint { font-size: 12px; color: #555; margin-top: 4px; line-height: 1.5; }
+    hr { border: none; border-top: 1px solid #1a1a1a; margin: 16px 0; }
+
+    #auto-sliders { margin-top: 14px; }
   </style>
 </head>
 <body>
@@ -83,11 +95,63 @@
   </div>
 
   <h2>Recording</h2>
+
   <div class="checkbox-row">
-    <input type="checkbox" id="manual_stop" />
+    <input type="checkbox" id="manual_stop" onchange="toggleSliders()" />
     <label for="manual_stop">Manual stop — tap to end recording instead of auto-detecting silence</label>
   </div>
-  <p class="hint">Enable this if silence detection cuts off your speech too early. When enabled, a tap gesture ends the current recording. Auto-detection is recommended in quiet environments; manual stop works better in noisy ones.</p>
+  <p class="hint">Recommended for noisy or unpredictable environments. When enabled, the sliders below have no effect.</p>
+
+  <div id="auto-sliders">
+    <hr />
+
+    <div class="slider-row">
+      <div class="slider-label">
+        Silence sensitivity — <span id="multiplier_val">4.0</span>×
+      </div>
+      <input type="range" id="silence_multiplier"
+             min="1.5" max="8.0" step="0.5" value="4.0"
+             oninput="document.getElementById('multiplier_val').textContent = parseFloat(this.value).toFixed(1)" />
+      <div class="slider-ends"><span>More sensitive</span><span>Less sensitive</span></div>
+    </div>
+    <p class="hint">How much louder your voice must be compared to background noise before it's counted as speech. Raise this in noisy environments (car, street).</p>
+
+    <div class="slider-row">
+      <div class="slider-label">
+        Silence duration — <span id="duration_val">20</span> chunks
+        (~<span id="duration_s">2.0</span>s)
+      </div>
+      <input type="range" id="silence_duration"
+             min="5" max="40" step="1" value="20"
+             oninput="updateDuration(this.value)" />
+      <div class="slider-ends"><span>Shorter pause</span><span>Longer pause</span></div>
+    </div>
+    <p class="hint">How long a pause after speaking before recording stops. Raise if the app cuts off before you finish a sentence.</p>
+
+    <div class="slider-row">
+      <div class="slider-label">
+        Speech confirmation — <span id="speech_val">3</span> chunks
+        (~<span id="speech_ms">300</span>ms)
+      </div>
+      <input type="range" id="min_speech_chunks"
+             min="1" max="10" step="1" value="3"
+             oninput="updateSpeech(this.value)" />
+      <div class="slider-ends"><span>Faster</span><span>More reliable</span></div>
+    </div>
+    <p class="hint">How many consecutive loud chunks confirm speech has started before silence detection activates. Raise if background noise is triggering recordings unexpectedly.</p>
+
+    <div class="slider-row">
+      <div class="slider-label">
+        Calibration window — <span id="calibration_val">10</span> chunks
+        (~<span id="calibration_s">1.0</span>s)
+      </div>
+      <input type="range" id="calibration_chunks"
+             min="5" max="30" step="1" value="10"
+             oninput="updateCalibration(this.value)" />
+      <div class="slider-ends"><span>Faster start</span><span>Better baseline</span></div>
+    </div>
+    <p class="hint">How long the app listens at the start of each session to measure background noise. Raise in variable noise environments.</p>
+  </div>
 
   <h2>Menu Options (up to 5)</h2>
   <div id="options-container"></div>
@@ -103,6 +167,24 @@
 </div>
 
 <script>
+  function toggleSliders() {
+    const manual = document.getElementById('manual_stop').checked
+    document.getElementById('auto-sliders').style.display = manual ? 'none' : 'block'
+  }
+
+  function updateDuration(val) {
+    document.getElementById('duration_val').textContent = val
+    document.getElementById('duration_s').textContent   = (val * 0.1).toFixed(1)
+  }
+  function updateSpeech(val) {
+    document.getElementById('speech_val').textContent = val
+    document.getElementById('speech_ms').textContent  = val * 100
+  }
+  function updateCalibration(val) {
+    document.getElementById('calibration_val').textContent = val
+    document.getElementById('calibration_s').textContent   = (val * 0.1).toFixed(1)
+  }
+
   const optContainer = document.getElementById('options-container')
   for (let i = 0; i < 5; i++) {
     optContainer.innerHTML += `
@@ -148,12 +230,16 @@
       })
     }
     return {
-      chatEndpoint:  document.getElementById('chat_endpoint').value.trim(),
-      chatsEndpoint: document.getElementById('chats_endpoint').value.trim(),
-      sttEndpoint:   document.getElementById('stt_endpoint').value.trim(),
-      apiKey:        document.getElementById('api_key').value.trim(),
-      routerModel:   document.getElementById('router_model').value.trim(),
-      manualStop:    document.getElementById('manual_stop').checked,
+      chatEndpoint:      document.getElementById('chat_endpoint').value.trim(),
+      chatsEndpoint:     document.getElementById('chats_endpoint').value.trim(),
+      sttEndpoint:       document.getElementById('stt_endpoint').value.trim(),
+      apiKey:            document.getElementById('api_key').value.trim(),
+      routerModel:       document.getElementById('router_model').value.trim(),
+      manualStop:        document.getElementById('manual_stop').checked,
+      silenceMultiplier: parseFloat(document.getElementById('silence_multiplier').value),
+      silenceDuration:   parseInt(document.getElementById('silence_duration').value),
+      minSpeechChunks:   parseInt(document.getElementById('min_speech_chunks').value),
+      calibrationChunks: parseInt(document.getElementById('calibration_chunks').value),
       options,
     }
   }
@@ -164,7 +250,27 @@
     document.getElementById('stt_endpoint').value   = cfg.sttEndpoint   || ''
     document.getElementById('api_key').value        = cfg.apiKey        || ''
     document.getElementById('router_model').value   = cfg.routerModel   || ''
-    document.getElementById('manual_stop').checked  = cfg.manualStop    || false
+
+    const manual = cfg.manualStop || false
+    document.getElementById('manual_stop').checked = manual
+    document.getElementById('auto-sliders').style.display = manual ? 'none' : 'block'
+
+    const mult = cfg.silenceMultiplier || 4.0
+    document.getElementById('silence_multiplier').value = mult
+    document.getElementById('multiplier_val').textContent = parseFloat(mult).toFixed(1)
+
+    const dur = cfg.silenceDuration || 20
+    document.getElementById('silence_duration').value = dur
+    updateDuration(dur)
+
+    const sp = cfg.minSpeechChunks || 3
+    document.getElementById('min_speech_chunks').value = sp
+    updateSpeech(sp)
+
+    const cal = cfg.calibrationChunks || 10
+    document.getElementById('calibration_chunks').value = cal
+    updateCalibration(cal)
+
     const opts = cfg.options || []
     for (let i = 0; i < 5; i++) {
       const o = opts[i] || {}

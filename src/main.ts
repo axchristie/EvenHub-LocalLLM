@@ -17,22 +17,29 @@ interface MenuOptionConfig {
 }
 
 interface AppConfig {
-  chatEndpoint:   string
-  chatsEndpoint:  string
-  sttEndpoint:    string
-  apiKey:         string
-  routerModel:    string
-  manualStop:     boolean
-  options:        MenuOptionConfig[]
+  chatEndpoint:        string
+  chatsEndpoint:       string
+  sttEndpoint:         string
+  apiKey:              string
+  routerModel:         string
+  manualStop:          boolean
+  silenceMultiplier:   number
+  silenceDuration:     number
+  minSpeechChunks:     number
+  calibrationChunks:   number
+  options:             MenuOptionConfig[]
 }
 
-const STORAGE_KEY = 'app_config'
+// Bumped storage key — prevents stale config from earlier versions
+// causing undefined slider values
+const STORAGE_KEY = 'app_config_v2'
 
-// Silence detection
-const SILENCE_DURATION_CHUNKS   = 20    // consecutive silent chunks before auto-stop (~2s)
-const MIN_CHUNKS                 = 10   // recordings shorter than this are discarded (~1s)
-const AMBIENT_CALIBRATION_CHUNKS = 10   // first ~1s used to establish ambient baseline
-const SILENCE_MULTIPLIER         = 4.0  // raised from 2.5 - gives more headroom for quiet speech
+// Default values — used when config fields are absent
+const DEFAULT_SILENCE_MULTIPLIER = 4.0
+const DEFAULT_SILENCE_DURATION   = 20
+const DEFAULT_MIN_SPEECH_CHUNKS  = 3
+const DEFAULT_CALIBRATION_CHUNKS = 10
+const MIN_CHUNKS                 = 10
 
 // Layout - 576x288 canvas
 const CONTENT_HEIGHT = 220
@@ -56,9 +63,11 @@ let activeOption: MenuOptionConfig | null = null
 let conversationHistory: Message[] = []
 
 const pcmChunks: Uint8Array[] = []
-let silentChunkCount = 0
+let silentChunkCount  = 0
+let speechChunkCount  = 0
+let speechDetected    = false
 
-// Ambient noise baseline - measured once per session, reused across all turns
+// Ambient baseline — set once per session, reused across all turns
 let ambientRmsBaseline: number | null = null
 let ambientRmsSumTemp   = 0
 let ambientRmsCountTemp = 0
@@ -159,16 +168,20 @@ async function setHud(text: string): Promise<void> {
   )
 }
 
-// Returns the appropriate listening pill text based on manual stop setting
 function listeningHud(): string {
-  return cfg?.manualStop
-    ? '■ Listening  ● Stop'
-    : '■ Listening'
+  return cfg?.manualStop ? '■ Listening  ● Stop' : '■ Listening'
 }
+
+function getSilenceMultiplier(): number  { return cfg?.silenceMultiplier  ?? DEFAULT_SILENCE_MULTIPLIER }
+function getSilenceDuration(): number    { return cfg?.silenceDuration    ?? DEFAULT_SILENCE_DURATION   }
+function getMinSpeechChunks(): number    { return cfg?.minSpeechChunks    ?? DEFAULT_MIN_SPEECH_CHUNKS  }
+function getCalibrationChunks(): number  { return cfg?.calibrationChunks  ?? DEFAULT_CALIBRATION_CHUNKS }
 
 function resetAudio(): void {
   pcmChunks.length    = 0
   silentChunkCount    = 0
+  speechChunkCount    = 0
+  speechDetected      = false
   ambientRmsSumTemp   = 0
   ambientRmsCountTemp = 0
 }
@@ -341,16 +354,26 @@ async function processMenuAudio(): Promise<void> {
   state = 'menu_processing'
   await setHud('▶ Processing')
   try {
-    if (pcmChunks.length < MIN_CHUNKS) { await startMenuListening(); return }
+    console.log(`[menu] chunks: ${pcmChunks.length}, speechDetected: ${speechDetected}, baseline: ${ambientRmsBaseline?.toFixed(0) ?? 'n/a'}`)
+    if (pcmChunks.length < MIN_CHUNKS) {
+      console.log('[menu] too short, restarting')
+      await startMenuListening()
+      return
+    }
     const wav        = buildWav(pcmChunks)
+    console.log(`[menu] wav: ${wav.size} bytes`)
     const transcript = await transcribeAudio(wav)
-    console.log('menu transcript:', transcript)
-    if (!transcript.trim()) { await startMenuListening(); return }
+    console.log(`[menu] transcript: "${transcript}"`)
+    if (!transcript.trim()) {
+      console.log('[menu] empty transcript, restarting')
+      await startMenuListening()
+      return
+    }
     const routerReply = await chatCompletion(
       [{ role: 'user', content: transcript }], cfg!.routerModel,
     )
     const key    = routerReply.trim().toUpperCase()
-    console.log('router key:', key)
+    console.log(`[menu] router key: "${key}"`)
     const option = menuOptions[key]
     if (!option) {
       await setContent('Not recognised.\nPlease try again.')
@@ -363,6 +386,7 @@ async function processMenuAudio(): Promise<void> {
     conversationHistory = []
     await startQueryListening()
   } catch (err) {
+    console.log(`[menu] error: ${err}`)
     await setContent(`Error: ${err instanceof Error ? err.message : String(err)}`)
     await setHud('')
     await new Promise(r => setTimeout(r, 2000))
@@ -375,11 +399,21 @@ async function processQueryAudio(): Promise<void> {
   state = 'query_processing'
   await setHud('▶ Processing')
   try {
-    if (pcmChunks.length < MIN_CHUNKS) { await startQueryListening(); return }
+    console.log(`[query] chunks: ${pcmChunks.length}, speechDetected: ${speechDetected}, baseline: ${ambientRmsBaseline?.toFixed(0) ?? 'n/a'}`)
+    if (pcmChunks.length < MIN_CHUNKS) {
+      console.log('[query] too short, restarting')
+      await startQueryListening()
+      return
+    }
     const wav        = buildWav(pcmChunks)
+    console.log(`[query] wav: ${wav.size} bytes`)
     const transcript = await transcribeAudio(wav)
-    console.log('query transcript:', transcript)
-    if (!transcript.trim()) { await startQueryListening(); return }
+    console.log(`[query] transcript: "${transcript}"`)
+    if (!transcript.trim()) {
+      console.log('[query] empty transcript, restarting')
+      await startQueryListening()
+      return
+    }
 
     conversationHistory.push({ role: 'user', content: transcript })
     const reply = await chatCompletion(conversationHistory, activeOption!.model)
@@ -396,6 +430,7 @@ async function processQueryAudio(): Promise<void> {
       await setHud('● Tap · ●● Exit')
     }
   } catch (err) {
+    console.log(`[query] error: ${err}`)
     state = 'response'
     await setContent(`Error: ${err instanceof Error ? err.message : String(err)}`)
     await setHud('● Tap to start over')
@@ -422,7 +457,6 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
   const sysType  = event.sysEvent?.eventType ?? null
   const textType = event.textEvent?.eventType ?? null
 
-  // Double-tap exits from any state
   if (sysType === OsEventTypeList.DOUBLE_CLICK_EVENT || textType === OsEventTypeList.DOUBLE_CLICK_EVENT) {
     if (state === 'menu_listening' || state === 'query_listening') {
       await bridge.audioControl(false)
@@ -459,41 +493,52 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     return
   }
 
-  // Audio accumulation — runs in both auto and manual stop modes
+  // Audio accumulation
   if ((state === 'menu_listening' || state === 'query_listening') && event.audioEvent?.audioPcm) {
     const chunk    = new Uint8Array(event.audioEvent.audioPcm)
     const chunkRms = rms(chunk)
     pcmChunks.push(chunk)
 
-    // In manual stop mode, skip silence detection entirely —
-    // recording runs until the user taps to stop
+    // Manual stop: skip all silence detection
     if (cfg?.manualStop) return
 
-    // Calibration phase: runs until baseline is established for this session
+    // Calibration phase: build ambient baseline once per session
     if (ambientRmsBaseline === null) {
       ambientRmsSumTemp += chunkRms
       ambientRmsCountTemp++
-      if (ambientRmsCountTemp >= AMBIENT_CALIBRATION_CHUNKS) {
+      if (ambientRmsCountTemp >= getCalibrationChunks()) {
         ambientRmsBaseline = ambientRmsSumTemp / ambientRmsCountTemp
-        console.log('ambient baseline set:', ambientRmsBaseline.toFixed(0))
+        console.log(`[audio] baseline: ${ambientRmsBaseline.toFixed(0)}, threshold will be: ${(ambientRmsBaseline * getSilenceMultiplier()).toFixed(0)}`)
       }
       return
     }
 
-    const dynamicThreshold = ambientRmsBaseline * SILENCE_MULTIPLIER
-    if (chunkRms < dynamicThreshold) {
-      silentChunkCount++
-      if (silentChunkCount >= SILENCE_DURATION_CHUNKS) {
-        if (state === 'menu_listening') await processMenuAudio()
-        else await processQueryAudio()
+    const dynamicThreshold = ambientRmsBaseline * getSilenceMultiplier()
+
+    if (chunkRms > dynamicThreshold) {
+      // Above threshold — speech
+      speechChunkCount++
+      silentChunkCount = 0
+      if (!speechDetected && speechChunkCount >= getMinSpeechChunks()) {
+        speechDetected = true
+        console.log(`[audio] speech confirmed, rms: ${chunkRms.toFixed(0)}, threshold: ${dynamicThreshold.toFixed(0)}`)
       }
     } else {
-      silentChunkCount = 0
+      // Below threshold — potential silence
+      speechChunkCount = 0
+      if (speechDetected) {
+        silentChunkCount++
+        if (silentChunkCount >= getSilenceDuration()) {
+          console.log(`[audio] end of speech detected`)
+          if (state === 'menu_listening') await processMenuAudio()
+          else await processQueryAudio()
+        }
+      }
     }
     return
   }
 
-  // Scroll up in response state: return to menu
+  // Scroll up: return to menu from response
   if (state === 'response' && textType === OsEventTypeList.SCROLL_TOP_EVENT) {
     await returnToMenu()
     return
@@ -502,14 +547,14 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
   const isTap = (sysType ?? 0) === OsEventTypeList.CLICK_EVENT
   if (!isTap) return
 
-  // Manual stop: tap ends recording while listening
+  // Manual stop: tap ends recording
   if (cfg?.manualStop && (state === 'menu_listening' || state === 'query_listening')) {
     if (state === 'menu_listening') await processMenuAudio()
     else await processQueryAudio()
     return
   }
 
-  // Response state: tap navigates
+  // Response: tap navigates
   if (state === 'response') {
     if (activeOption?.multiTurn) {
       await startQueryListening()
