@@ -37,6 +37,7 @@ const DEFAULT_SILENCE_DURATION   = 20
 const DEFAULT_MIN_SPEECH_CHUNKS  = 3
 const DEFAULT_CALIBRATION_CHUNKS = 10
 const MIN_CHUNKS                 = 10
+const MAX_CONTENT_CHARS          = 1900   // textContainerUpgrade limit is 2000
 
 // Layout - 576x288 canvas
 const CONTENT_HEIGHT = 220
@@ -67,6 +68,9 @@ let speechDetected    = false
 let ambientRmsBaseline: number | null = null
 let ambientRmsSumTemp   = 0
 let ambientRmsCountTemp = 0
+
+// Processing animation handle
+let pillAnimationTimer: ReturnType<typeof setInterval> | null = null
 
 // -- Bridge init ---------------------------------------------------------------
 
@@ -146,11 +150,6 @@ function buildWav(chunks: Uint8Array[]): Blob {
   return new Blob([header, pcm], { type: 'audio/wav' })
 }
 
-// textContainerUpgrade has a documented 2000-character limit. Exceeding it
-// causes the upgrade to fail silently, leaving stale content on screen.
-// We truncate at 1900 to leave safe headroom; the firmware scrolls the
-// content natively within the container up to that limit.
-const MAX_CONTENT_CHARS = 1900
 async function setContent(text: string): Promise<void> {
   const display = text.length <= MAX_CONTENT_CHARS
     ? text
@@ -170,10 +169,83 @@ function listeningHud(): string {
   return cfg?.manualStop ? '■ Listening  ● Stop' : '■ Listening'
 }
 
-function getSilenceMultiplier(): number  { return cfg?.silenceMultiplier  ?? DEFAULT_SILENCE_MULTIPLIER }
-function getSilenceDuration(): number    { return cfg?.silenceDuration    ?? DEFAULT_SILENCE_DURATION   }
-function getMinSpeechChunks(): number    { return cfg?.minSpeechChunks    ?? DEFAULT_MIN_SPEECH_CHUNKS  }
-function getCalibrationChunks(): number  { return cfg?.calibrationChunks  ?? DEFAULT_CALIBRATION_CHUNKS }
+// Item 3: Processing animation. Fixed-width frames keep "Processing"
+// anchored while only the trailing markers change — no horizontal jitter.
+const PILL_FRAMES = [
+  'Processing ▶  ',
+  'Processing ▶▶ ',
+  'Processing ▶▶▶',
+]
+function startPillAnimation(): void {
+  stopPillAnimation()
+  let i = 0
+  // Show first frame immediately, then cycle
+  void setHud(PILL_FRAMES[0])
+  pillAnimationTimer = setInterval(() => {
+    i = (i + 1) % PILL_FRAMES.length
+    void setHud(PILL_FRAMES[i])
+  }, 400)
+}
+function stopPillAnimation(): void {
+  if (pillAnimationTimer !== null) {
+    clearInterval(pillAnimationTimer)
+    pillAnimationTimer = null
+  }
+}
+
+// Item 2: Friendly error mapping. Raw error still goes to console;
+// the user sees something actionable.
+function friendlyError(err: unknown): { content: string; pill: string } {
+  const msg = err instanceof Error ? err.message : String(err)
+  console.log('[error]', msg)
+
+  if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+    return {
+      content: "Can't reach your server.\nCheck it's running and\non your network.",
+      pill: '✗ No connection',
+    }
+  }
+  if (/\b401\b/.test(msg)) {
+    return {
+      content: 'Authentication failed.\nCheck your API key\nin settings.',
+      pill: '✗ Auth failed',
+    }
+  }
+  if (/\b403\b/.test(msg)) {
+    return {
+      content: 'Access denied.\nCheck your API key\nand permissions.',
+      pill: '✗ Access denied',
+    }
+  }
+  if (/\b404\b/.test(msg)) {
+    return {
+      content: 'Endpoint not found.\nCheck your endpoint URLs\nin settings.',
+      pill: '✗ Not found',
+    }
+  }
+  if (/STT 5\d\d/.test(msg)) {
+    return {
+      content: "Couldn't process audio.\nPlease try again.",
+      pill: '✗ Audio error',
+    }
+  }
+  if (/\b5\d\d\b/.test(msg)) {
+    return {
+      content: "The model didn't respond.\nIt may be loading —\ntry again.",
+      pill: '✗ No response',
+    }
+  }
+  if (/Parse error/i.test(msg)) {
+    return {
+      content: 'Got an unexpected response.\nCheck your model is\nconfigured correctly.',
+      pill: '✗ Bad response',
+    }
+  }
+  return {
+    content: `Something went wrong.\n${msg.slice(0, 80)}`,
+    pill: '✗ Error',
+  }
+}
 
 function resetAudio(): void {
   pcmChunks.length    = 0
@@ -233,7 +305,67 @@ async function startApp(config: AppConfig): Promise<void> {
   if (state === 'menu_listening' || state === 'query_listening') {
     await bridge.audioControl(false)
   }
+  stopPillAnimation()
   await startApp(newCfg)
+}
+
+// Item 1: Connection test. Runs against the SAVED config (cfg), routed
+// through the same logic the glasses experience uses. Called from the
+// settings page after the user saves. Returns a human-readable result.
+;(window as any).__testConnection = async (): Promise<string> => {
+  if (!cfg) {
+    return '✗ No saved settings. Tap Save & Start first.'
+  }
+
+  const results: string[] = []
+
+  // Check 1: Chat endpoint + API key + router model
+  try {
+    const res = await fetch(cfg.chatEndpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${cfg.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: cfg.routerModel,
+        messages: [{ role: 'user', content: 'test' }],
+      }),
+    })
+    if (res.ok) {
+      results.push('✓ Chat endpoint OK')
+    } else if (res.status === 401 || res.status === 403) {
+      results.push(`✗ Chat: auth failed (${res.status}) — check API key`)
+    } else if (res.status === 404) {
+      results.push('✗ Chat: endpoint not found (404) — check URL')
+    } else {
+      results.push(`✗ Chat: error ${res.status}`)
+    }
+  } catch (e) {
+    results.push(`✗ Chat: can't reach server — ${e instanceof Error ? e.message : 'network error'}`)
+  }
+
+  // Check 2: STT endpoint. An empty POST returning 400 (no file) means
+  // auth and routing worked — that's a PASS. A 401/403 is a real failure.
+  try {
+    const res = await fetch(cfg.sttEndpoint, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
+      body: new FormData(),
+    })
+    if (res.status === 401 || res.status === 403) {
+      results.push(`✗ STT: auth failed (${res.status}) — check API key / endpoint`)
+    } else if (res.status === 404) {
+      results.push('✗ STT: endpoint not found (404) — check URL')
+    } else {
+      // 400 (no file), 422, or 200 all mean auth + routing succeeded
+      results.push('✓ STT endpoint OK')
+    }
+  } catch (e) {
+    results.push(`✗ STT: can't reach server — ${e instanceof Error ? e.message : 'network error'}`)
+  }
+
+  return results.join('\n')
 }
 
 const existingCfg = await loadConfig()
@@ -249,6 +381,7 @@ if (existingCfg) {
 // -- Glasses experience -------------------------------------------------------
 
 async function startMenuListening(): Promise<void> {
+  stopPillAnimation()
   resetSession()
   activeOption = null
   conversationHistory = []
@@ -259,6 +392,7 @@ async function startMenuListening(): Promise<void> {
 }
 
 async function startQueryListening(): Promise<void> {
+  stopPillAnimation()
   resetAudio()
   state = 'query_listening'
   await setContent(activeOption!.label)
@@ -294,6 +428,7 @@ async function chatCompletion(history: Message[], model: string): Promise<string
     },
     body: JSON.stringify({ model, messages: history }),
   })
+  if (!res.ok) throw new Error(`Chat ${res.status} ${res.statusText}`)
   const text = await res.text()
   if (text.trimStart().startsWith('data:')) {
     return text
@@ -308,7 +443,7 @@ async function chatCompletion(history: Message[], model: string): Promise<string
   try {
     return JSON.parse(text).choices?.[0]?.message?.content ?? 'No content in response'
   } catch {
-    return `Parse error: ${text.slice(0, 200)}`
+    throw new Error('Parse error')
   }
 }
 
@@ -350,23 +485,13 @@ async function saveChat(history: Message[], model: string): Promise<void> {
 async function processMenuAudio(): Promise<void> {
   await bridge.audioControl(false)
   state = 'menu_processing'
-  await setHud('▶ Processing')
+  startPillAnimation()
   try {
-    console.log(`[menu] chunks: ${pcmChunks.length}, speechDetected: ${speechDetected}, baseline: ${ambientRmsBaseline?.toFixed(0) ?? 'n/a'}`)
-    if (pcmChunks.length < MIN_CHUNKS) {
-      console.log('[menu] too short, restarting')
-      await startMenuListening()
-      return
-    }
+    if (pcmChunks.length < MIN_CHUNKS) { await startMenuListening(); return }
     const wav        = buildWav(pcmChunks)
-    console.log(`[menu] wav: ${wav.size} bytes`)
     const transcript = await transcribeAudio(wav)
     console.log(`[menu] transcript: "${transcript}"`)
-    if (!transcript.trim()) {
-      console.log('[menu] empty transcript, restarting')
-      await startMenuListening()
-      return
-    }
+    if (!transcript.trim()) { await startMenuListening(); return }
     const routerReply = await chatCompletion(
       [{ role: 'user', content: transcript }], cfg!.routerModel,
     )
@@ -374,6 +499,7 @@ async function processMenuAudio(): Promise<void> {
     console.log(`[menu] router key: "${key}"`)
     const option = menuOptions[key]
     if (!option) {
+      stopPillAnimation()
       await setContent('Not recognised.\nPlease try again.')
       await setHud('')
       await new Promise(r => setTimeout(r, 2000))
@@ -384,10 +510,11 @@ async function processMenuAudio(): Promise<void> {
     conversationHistory = []
     await startQueryListening()
   } catch (err) {
-    console.log(`[menu] error: ${err}`)
-    await setContent(`Error: ${err instanceof Error ? err.message : String(err)}`)
-    await setHud('')
-    await new Promise(r => setTimeout(r, 2000))
+    stopPillAnimation()
+    const fe = friendlyError(err)
+    await setContent(fe.content)
+    await setHud(fe.pill)
+    await new Promise(r => setTimeout(r, 2500))
     await startMenuListening()
   }
 }
@@ -395,28 +522,19 @@ async function processMenuAudio(): Promise<void> {
 async function processQueryAudio(): Promise<void> {
   await bridge.audioControl(false)
   state = 'query_processing'
-  await setHud('▶ Processing')
+  startPillAnimation()
   try {
-    console.log(`[query] chunks: ${pcmChunks.length}, speechDetected: ${speechDetected}, baseline: ${ambientRmsBaseline?.toFixed(0) ?? 'n/a'}`)
-    if (pcmChunks.length < MIN_CHUNKS) {
-      console.log('[query] too short, restarting')
-      await startQueryListening()
-      return
-    }
+    if (pcmChunks.length < MIN_CHUNKS) { await startQueryListening(); return }
     const wav        = buildWav(pcmChunks)
-    console.log(`[query] wav: ${wav.size} bytes`)
     const transcript = await transcribeAudio(wav)
     console.log(`[query] transcript: "${transcript}"`)
-    if (!transcript.trim()) {
-      console.log('[query] empty transcript, restarting')
-      await startQueryListening()
-      return
-    }
+    if (!transcript.trim()) { await startQueryListening(); return }
 
     conversationHistory.push({ role: 'user', content: transcript })
     const reply = await chatCompletion(conversationHistory, activeOption!.model)
     conversationHistory.push({ role: 'assistant', content: reply })
 
+    stopPillAnimation()
     state = 'response'
 
     if (activeOption!.multiTurn) {
@@ -428,10 +546,11 @@ async function processQueryAudio(): Promise<void> {
       await setHud('● Tap · ●● Exit')
     }
   } catch (err) {
-    console.log(`[query] error: ${err}`)
+    stopPillAnimation()
     state = 'response'
-    await setContent(`Error: ${err instanceof Error ? err.message : String(err)}`)
-    await setHud('● Tap to start over')
+    const fe = friendlyError(err)
+    await setContent(fe.content + '\n\n(Tap to start over)')
+    await setHud(fe.pill)
   }
 }
 
@@ -456,6 +575,7 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
   const textType = event.textEvent?.eventType ?? null
 
   if (sysType === OsEventTypeList.DOUBLE_CLICK_EVENT || textType === OsEventTypeList.DOUBLE_CLICK_EVENT) {
+    stopPillAnimation()
     if (state === 'menu_listening' || state === 'query_listening') {
       await bridge.audioControl(false)
     }
@@ -467,6 +587,7 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
   }
 
   if (sysType === OsEventTypeList.SYSTEM_EXIT_EVENT || sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT) {
+    stopPillAnimation()
     if (state === 'menu_listening' || state === 'query_listening') {
       await bridge.audioControl(false)
     }
@@ -502,27 +623,27 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     if (ambientRmsBaseline === null) {
       ambientRmsSumTemp += chunkRms
       ambientRmsCountTemp++
-      if (ambientRmsCountTemp >= getCalibrationChunks()) {
+      if (ambientRmsCountTemp >= (cfg?.calibrationChunks ?? DEFAULT_CALIBRATION_CHUNKS)) {
         ambientRmsBaseline = ambientRmsSumTemp / ambientRmsCountTemp
-        console.log(`[audio] baseline: ${ambientRmsBaseline.toFixed(0)}, threshold: ${(ambientRmsBaseline * getSilenceMultiplier()).toFixed(0)}`)
+        console.log(`[audio] baseline: ${ambientRmsBaseline.toFixed(0)}`)
       }
       return
     }
 
-    const dynamicThreshold = ambientRmsBaseline * getSilenceMultiplier()
+    const dynamicThreshold = ambientRmsBaseline * (cfg?.silenceMultiplier ?? DEFAULT_SILENCE_MULTIPLIER)
 
     if (chunkRms > dynamicThreshold) {
       speechChunkCount++
       silentChunkCount = 0
-      if (!speechDetected && speechChunkCount >= getMinSpeechChunks()) {
+      if (!speechDetected && speechChunkCount >= (cfg?.minSpeechChunks ?? DEFAULT_MIN_SPEECH_CHUNKS)) {
         speechDetected = true
-        console.log(`[audio] speech confirmed, rms: ${chunkRms.toFixed(0)}, threshold: ${dynamicThreshold.toFixed(0)}`)
+        console.log('[audio] speech confirmed')
       }
     } else {
       speechChunkCount = 0
       if (speechDetected) {
         silentChunkCount++
-        if (silentChunkCount >= getSilenceDuration()) {
+        if (silentChunkCount >= (cfg?.silenceDuration ?? DEFAULT_SILENCE_DURATION)) {
           console.log('[audio] end of speech detected')
           if (state === 'menu_listening') await processMenuAudio()
           else await processQueryAudio()
@@ -532,12 +653,9 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     return
   }
 
-  // Bug fix 2: Explicit guard for scroll-bottom in response state.
-  // Without this, SCROLL_BOTTOM_EVENT can fall through to the tap check
-  // because protobuf encodes it as 0 on the wire in some firmware versions,
-  // matching CLICK_EVENT and triggering an unintended menu loop.
+  // Scroll-bottom does nothing — user must tap to proceed
   if (textType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-    return  // scroll to bottom does nothing — user must tap to proceed
+    return
   }
 
   // Scroll up: return to menu from response

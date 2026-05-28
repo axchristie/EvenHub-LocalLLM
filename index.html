@@ -102,6 +102,32 @@
     }
     .save-btn:active { background: #3a8eef; }
 
+    .test-btn {
+      width: 100%;
+      padding: 11px;
+      background: transparent;
+      color: #4a9eff;
+      border: 1px solid #2a3a4a;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-bottom: 8px;
+    }
+    .test-btn:active { background: #11202e; }
+    .test-btn:disabled { color: #555; border-color: #1a1a1a; }
+
+    .test-result {
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-line;
+      margin-bottom: 10px;
+      color: #aaa;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+    .test-result:empty { margin-bottom: 0; }
+
     .status {
       text-align: center;
       font-size: 13px;
@@ -220,6 +246,8 @@
 
 <!-- Sticky save bar — always visible above the iOS keyboard -->
 <div id="save-bar">
+  <button class="test-btn" onclick="testConnection()">Test Connection</button>
+  <div class="test-result" id="test-result"></div>
   <button class="save-btn" onclick="saveSettings()">Save &amp; Start</button>
   <div class="status" id="status"></div>
 </div>
@@ -398,6 +426,32 @@
       }
     } catch (e) {
       status.textContent = 'Error: ' + e.message
+    }
+  }
+
+  async function testConnection() {
+    const btn    = document.querySelector('.test-btn')
+    const result = document.getElementById('test-result')
+    if (!window.__testConnection) {
+      result.style.color = '#e57373'
+      result.textContent = 'Bridge not ready \u2014 please wait a moment.'
+      return
+    }
+    btn.disabled = true
+    btn.textContent = 'Testing\u2026'
+    result.style.color = '#aaa'
+    result.textContent = 'Running checks against saved settings\u2026'
+    try {
+      const output = await window.__testConnection()
+      // Color green if all checks passed, amber/red otherwise
+      result.style.color = output.includes('\u2717') ? '#e0a04a' : '#5fb85f'
+      result.textContent = output
+    } catch (e) {
+      result.style.color = '#e57373'
+      result.textContent = 'Test failed: ' + e.message
+    } finally {
+      btn.disabled = false
+      btn.textContent = 'Test Connection'
     }
   }
 

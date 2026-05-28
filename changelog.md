@@ -2,14 +2,14 @@
 
 ## May 28, 2026
 
-v0.6.1 — Navigation and UI Fixes
+v0.7.0
 
-- Replies from models are no longer truncated — full responses
-  display and scroll natively within the content container.
-- Fixed scroll-bottom triggering an unintended return to the main
-  menu. Scrolling to the end of a reply now does nothing; tap to
-  proceed as before.
-- Settings page on iPhone: Save button is now sticky and always
-  visible above the iOS keyboard. Focused inputs scroll into view
-  automatically when the keyboard appears. Added bottom padding
-  so option cards at the bottom of the form are fully accessible.
+- Added Test Connection in settings — verifies your endpoints and
+  API key before you use the glasses.
+- Friendlier, clearer error messages (auth, network, model issues).
+- Added an animated processing indicator so you know the app is working.
+- Includes the 0.6.1 fixes: full untruncated replies, scroll-to-bottom
+  no longer jumps to menu, and improved iPhone settings keyboard handling.
+
+Note: open-webui v0.9.5 and v0.9.6 break external API access. Stay on
+v0.9.4 until a fixed release is confirmed.
