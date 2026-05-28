@@ -1,11 +1,15 @@
 # Changelog
 
-## May 6, 2026
+## May 28, 2026
 
-v0.5.0 — Initial release
+v0.6.1 — Navigation and UI Fixes
 
-Voice-driven interface for self-hosted LLMs on the Even Realities G2.
-Speak a menu option to select a task, speak your query, and read the
-response on your glasses. Configurable via the Even Realities iPhone
-app — no code changes required. Requires open-webui with Whisper STT,
-accessible over a private Tailscale network.
+- Replies from models are no longer truncated — full responses
+  display and scroll natively within the content container.
+- Fixed scroll-bottom triggering an unintended return to the main
+  menu. Scrolling to the end of a reply now does nothing; tap to
+  proceed as before.
+- Settings page on iPhone: Save button is now sticky and always
+  visible above the iOS keyboard. Focused inputs scroll into view
+  automatically when the keyboard appears. Added bottom padding
+  so option cards at the bottom of the form are fully accessible.

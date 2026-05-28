@@ -30,11 +30,8 @@ interface AppConfig {
   options:             MenuOptionConfig[]
 }
 
-// Bumped storage key — prevents stale config from earlier versions
-// causing undefined slider values
 const STORAGE_KEY = 'app_config_v2'
 
-// Default values — used when config fields are absent
 const DEFAULT_SILENCE_MULTIPLIER = 4.0
 const DEFAULT_SILENCE_DURATION   = 20
 const DEFAULT_MIN_SPEECH_CHUNKS  = 3
@@ -67,7 +64,6 @@ let silentChunkCount  = 0
 let speechChunkCount  = 0
 let speechDetected    = false
 
-// Ambient baseline — set once per session, reused across all turns
 let ambientRmsBaseline: number | null = null
 let ambientRmsSumTemp   = 0
 let ambientRmsCountTemp = 0
@@ -150,13 +146,15 @@ function buildWav(chunks: Uint8Array[]): Blob {
   return new Blob([header, pcm], { type: 'audio/wav' })
 }
 
+// textContainerUpgrade has a documented 2000-character limit. Exceeding it
+// causes the upgrade to fail silently, leaving stale content on screen.
+// We truncate at 1900 to leave safe headroom; the firmware scrolls the
+// content natively within the container up to that limit.
+const MAX_CONTENT_CHARS = 1900
 async function setContent(text: string): Promise<void> {
-  const encoder = new TextEncoder()
-  const decoder = new TextDecoder()
-  const encoded = encoder.encode(text)
-  const display = encoded.length <= 980
+  const display = text.length <= MAX_CONTENT_CHARS
     ? text
-    : decoder.decode(encoded.slice(0, 980)) + '...'
+    : text.slice(0, MAX_CONTENT_CHARS) + '...'
   await bridge.textContainerUpgrade(
     new TextContainerUpgrade({ containerID: 1, containerName: 'content', content: display }),
   )
@@ -499,16 +497,14 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     const chunkRms = rms(chunk)
     pcmChunks.push(chunk)
 
-    // Manual stop: skip all silence detection
     if (cfg?.manualStop) return
 
-    // Calibration phase: build ambient baseline once per session
     if (ambientRmsBaseline === null) {
       ambientRmsSumTemp += chunkRms
       ambientRmsCountTemp++
       if (ambientRmsCountTemp >= getCalibrationChunks()) {
         ambientRmsBaseline = ambientRmsSumTemp / ambientRmsCountTemp
-        console.log(`[audio] baseline: ${ambientRmsBaseline.toFixed(0)}, threshold will be: ${(ambientRmsBaseline * getSilenceMultiplier()).toFixed(0)}`)
+        console.log(`[audio] baseline: ${ambientRmsBaseline.toFixed(0)}, threshold: ${(ambientRmsBaseline * getSilenceMultiplier()).toFixed(0)}`)
       }
       return
     }
@@ -516,7 +512,6 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     const dynamicThreshold = ambientRmsBaseline * getSilenceMultiplier()
 
     if (chunkRms > dynamicThreshold) {
-      // Above threshold — speech
       speechChunkCount++
       silentChunkCount = 0
       if (!speechDetected && speechChunkCount >= getMinSpeechChunks()) {
@@ -524,18 +519,25 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
         console.log(`[audio] speech confirmed, rms: ${chunkRms.toFixed(0)}, threshold: ${dynamicThreshold.toFixed(0)}`)
       }
     } else {
-      // Below threshold — potential silence
       speechChunkCount = 0
       if (speechDetected) {
         silentChunkCount++
         if (silentChunkCount >= getSilenceDuration()) {
-          console.log(`[audio] end of speech detected`)
+          console.log('[audio] end of speech detected')
           if (state === 'menu_listening') await processMenuAudio()
           else await processQueryAudio()
         }
       }
     }
     return
+  }
+
+  // Bug fix 2: Explicit guard for scroll-bottom in response state.
+  // Without this, SCROLL_BOTTOM_EVENT can fall through to the tap check
+  // because protobuf encodes it as 0 on the wire in some firmware versions,
+  // matching CLICK_EVENT and triggering an unintended menu loop.
+  if (textType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+    return  // scroll to bottom does nothing — user must tap to proceed
   }
 
   // Scroll up: return to menu from response

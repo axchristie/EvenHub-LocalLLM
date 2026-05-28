@@ -2,13 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Local LLM</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
 
-    #settings-panel { padding: 20px; max-width: 600px; margin: 0 auto; }
+    body {
+      font-family: -apple-system, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      min-height: 100vh;
+      /* Bottom padding ensures content is never hidden behind
+         the iOS home indicator or a sticky save button */
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    #settings-panel {
+      padding: 20px;
+      max-width: 600px;
+      margin: 0 auto;
+      /* Large bottom padding so the last option card can always be
+         scrolled up above the iOS keyboard (which covers ~45% of the
+         viewport) plus the sticky save bar */
+      padding-bottom: 420px;
+    }
 
     h1 { font-size: 20px; margin-bottom: 4px; color: #fff; }
     .subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
@@ -18,9 +35,17 @@
     .field { margin-bottom: 14px; }
     label { display: block; font-size: 13px; color: #888; margin-bottom: 4px; }
     input[type="text"], input[type="password"], textarea {
-      width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a;
-      border-radius: 8px; padding: 10px 12px; color: #e0e0e0;
-      font-size: 14px; outline: none; font-family: inherit;
+      width: 100%;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #e0e0e0;
+      font-size: 14px;
+      outline: none;
+      font-family: inherit;
+      /* Prevents iOS zoom on focus (font-size >= 16px does the same
+         but 14px is fine with user-scalable=no avoided) */
     }
     input[type="text"]:focus, input[type="password"]:focus, textarea:focus {
       border-color: #444;
@@ -41,17 +66,49 @@
 
     .hint { font-size: 12px; color: #555; margin-top: 4px; line-height: 1.5; margin-bottom: 14px; }
 
-    .option-card { background: #111; border: 1px solid #1e1e1e;
-                   border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+    .option-card {
+      background: #111;
+      border: 1px solid #1e1e1e;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 10px;
+    }
     .option-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
     .option-title { font-size: 14px; font-weight: 600; color: #bbb; }
 
-    .save-btn { width: 100%; padding: 14px; background: #4a9eff; color: #fff;
-                border: none; border-radius: 10px; font-size: 16px; font-weight: 600;
-                cursor: pointer; margin-top: 24px; }
+    /* Bug fix 3: Sticky save bar — always visible above the keyboard */
+    #save-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: #0a0a0a;
+      border-top: 1px solid #1a1a1a;
+      padding: 12px 20px;
+      padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      z-index: 100;
+    }
+
+    .save-btn {
+      width: 100%;
+      padding: 14px;
+      background: #4a9eff;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+    }
     .save-btn:active { background: #3a8eef; }
-    .status { text-align: center; font-size: 13px; color: #4a9eff;
-              margin-top: 12px; min-height: 20px; padding-bottom: 40px; }
+
+    .status {
+      text-align: center;
+      font-size: 13px;
+      color: #4a9eff;
+      margin-top: 8px;
+      min-height: 18px;
+    }
 
     #running-panel { display: none; padding: 40px 20px; text-align: center; }
     #running-panel h1 { margin-bottom: 10px; }
@@ -59,7 +116,6 @@
     .edit-link { color: #4a9eff; font-size: 14px; cursor: pointer; }
 
     hr { border: none; border-top: 1px solid #1a1a1a; margin: 16px 0; }
-
     #auto-sliders { margin-top: 14px; }
   </style>
 </head>
@@ -73,25 +129,30 @@
   <div class="field">
     <label>Chat Endpoint</label>
     <input type="text" id="chat_endpoint"
-           placeholder="https://your-openwebui.example.com/api/chat/completions" />
+           placeholder="https://your-openwebui.example.com/api/chat/completions"
+           inputmode="url" autocorrect="off" autocapitalize="none" />
   </div>
   <div class="field">
     <label>Chats Endpoint (for saving history)</label>
     <input type="text" id="chats_endpoint"
-           placeholder="https://your-openwebui.example.com/api/v1/chats/new" />
+           placeholder="https://your-openwebui.example.com/api/v1/chats/new"
+           inputmode="url" autocorrect="off" autocapitalize="none" />
   </div>
   <div class="field">
     <label>STT Endpoint</label>
     <input type="text" id="stt_endpoint"
-           placeholder="https://your-openwebui.example.com/api/v1/audio/transcriptions" />
+           placeholder="https://your-openwebui.example.com/api/v1/audio/transcriptions"
+           inputmode="url" autocorrect="off" autocapitalize="none" />
   </div>
   <div class="field">
     <label>API Key</label>
-    <input type="password" id="api_key" placeholder="your-api-key" />
+    <input type="password" id="api_key" placeholder="your-api-key"
+           autocorrect="off" autocapitalize="none" />
   </div>
   <div class="field">
     <label>Router Model</label>
-    <input type="text" id="router_model" placeholder="your-router-model" />
+    <input type="text" id="router_model" placeholder="your-router-model"
+           autocorrect="off" autocapitalize="none" />
   </div>
 
   <h2>Recording</h2>
@@ -114,7 +175,7 @@
              oninput="document.getElementById('multiplier_val').textContent = parseFloat(this.value).toFixed(1)" />
       <div class="slider-ends"><span>More sensitive</span><span>Less sensitive</span></div>
     </div>
-    <p class="hint">How much louder your voice must be compared to background noise before it's counted as speech. Raise this in noisy environments (car, street).</p>
+    <p class="hint">How much louder your voice must be compared to background noise. Raise in noisy environments.</p>
 
     <div class="slider-row">
       <div class="slider-label">
@@ -126,7 +187,7 @@
              oninput="updateDuration(this.value)" />
       <div class="slider-ends"><span>Shorter pause</span><span>Longer pause</span></div>
     </div>
-    <p class="hint">How long a pause after speaking before recording stops. Raise if the app cuts off before you finish a sentence.</p>
+    <p class="hint">How long a pause after speaking before recording stops. Raise if the app cuts off mid-sentence.</p>
 
     <div class="slider-row">
       <div class="slider-label">
@@ -138,7 +199,7 @@
              oninput="updateSpeech(this.value)" />
       <div class="slider-ends"><span>Faster</span><span>More reliable</span></div>
     </div>
-    <p class="hint">How many consecutive loud chunks confirm speech has started before silence detection activates. Raise if background noise is triggering recordings unexpectedly.</p>
+    <p class="hint">Consecutive loud chunks needed to confirm speech has started. Raise if background noise triggers false recordings.</p>
 
     <div class="slider-row">
       <div class="slider-label">
@@ -150,12 +211,15 @@
              oninput="updateCalibration(this.value)" />
       <div class="slider-ends"><span>Faster start</span><span>Better baseline</span></div>
     </div>
-    <p class="hint">How long the app listens at the start of each session to measure background noise. Raise in variable noise environments.</p>
+    <p class="hint">How long the app measures background noise at the start of each session before accepting speech.</p>
   </div>
 
   <h2>Menu Options (up to 5)</h2>
   <div id="options-container"></div>
+</div>
 
+<!-- Sticky save bar — always visible above the iOS keyboard -->
+<div id="save-bar">
   <button class="save-btn" onclick="saveSettings()">Save &amp; Start</button>
   <div class="status" id="status"></div>
 </div>
@@ -167,6 +231,29 @@
 </div>
 
 <script>
+  // Bug fix 3: Scroll focused input into view above the iOS keyboard.
+  // Listening on the focusin event (fires for any input/textarea gaining
+  // focus) is more reliable than visualViewport resize alone. The delay
+  // lets the keyboard finish animating before we scroll.
+  document.addEventListener('focusin', (e) => {
+    const el = e.target
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+      setTimeout(() => {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 300)
+    }
+  })
+
+  // Also re-scroll when the keyboard finishes opening (viewport resizes)
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      const el = document.activeElement
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+        setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100)
+      }
+    })
+  }
+
   function toggleSliders() {
     const manual = document.getElementById('manual_stop').checked
     document.getElementById('auto-sliders').style.display = manual ? 'none' : 'block'
@@ -195,7 +282,8 @@
         </div>
         <div class="field">
           <label>Router Key (must match router model output exactly)</label>
-          <input type="text" id="opt_key_${i}" placeholder="MENU_OPTION_${i + 1}" />
+          <input type="text" id="opt_key_${i}" placeholder="MENU_OPTION_${i + 1}"
+                 autocorrect="off" autocapitalize="characters" />
         </div>
         <div class="field">
           <label>Display Label (shown on glasses)</label>
@@ -204,7 +292,8 @@
         </div>
         <div class="field">
           <label>Model</label>
-          <input type="text" id="opt_model_${i}" placeholder="model-name" />
+          <input type="text" id="opt_model_${i}" placeholder="model-name"
+                 autocorrect="off" autocapitalize="none" />
         </div>
         <div class="checkbox-row">
           <input type="checkbox" id="opt_multiturn_${i}" />
@@ -285,11 +374,13 @@
 
   function showSettings() {
     document.getElementById('settings-panel').style.display = 'block'
+    document.getElementById('save-bar').style.display       = 'block'
     document.getElementById('running-panel').style.display  = 'none'
   }
 
   function showRunning() {
     document.getElementById('settings-panel').style.display = 'none'
+    document.getElementById('save-bar').style.display       = 'none'
     document.getElementById('running-panel').style.display  = 'block'
   }
 
