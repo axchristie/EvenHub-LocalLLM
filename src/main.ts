@@ -150,10 +150,67 @@ function buildWav(chunks: Uint8Array[]): Blob {
   return new Blob([header, pcm], { type: 'audio/wav' })
 }
 
+// Sanitize model output for the G2 display. The firmware font supports a
+// limited character set; unsupported typographic codepoints (fractions,
+// en/em dashes, curly quotes, math symbols, emoji) can cause
+// textContainerUpgrade to silently fail, leaving stale content on screen.
+// Reasoning models like nemotron are especially prone to emitting these,
+// particularly in formatted content such as recipes. We normalize the
+// common offenders to ASCII equivalents and strip anything else outside
+// a safe range. (Note: the pill HUD glyphs we use deliberately — ■ ▶ ● ▲ —
+// are known-good, so we do not strip the geometric-shapes block.)
+function sanitizeForDisplay(text: string): string {
+  return text
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")        // curly/low single quotes
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')        // curly/low double quotes
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015]/g, '-') // hyphens, en/em dashes
+    .replace(/\u2026/g, '...')                            // ellipsis
+    .replace(/\u00BD/g, '1/2')                            // 1/2
+    .replace(/\u00BC/g, '1/4')                            // 1/4
+    .replace(/\u00BE/g, '3/4')                            // 3/4
+    .replace(/\u2153/g, '1/3').replace(/\u2154/g, '2/3')  // thirds
+    .replace(/[\u2150-\u215F\u2189]/g, '')               // any other fraction glyphs
+    .replace(/\u00D7/g, 'x')                              // multiplication sign
+    .replace(/\u00F7/g, '/')                              // division sign
+    .replace(/\u2248/g, '~').replace(/\u2245/g, '~')      // approximately
+    .replace(/[\u2260\u2264\u2265]/g, m =>               // != <= >=
+      m === '\u2260' ? '!=' : m === '\u2264' ? '<=' : '>=')
+    .replace(/\u00B0/g, ' deg')                           // degree sign
+    .replace(/[\u00A0\u2007\u202F]/g, ' ')               // non-breaking / figure spaces
+    .replace(/[\u2022\u00B7\u2219]/g, '-')               // bullets -> dash
+    .replace(/\u2122/g, '(TM)').replace(/\u00AE/g, '(R)').replace(/\u00A9/g, '(C)')
+    .replace(/\u20AC/g, 'EUR').replace(/\u00A3/g, 'GBP').replace(/\u00A5/g, 'JPY')
+    // Fold common accented Latin letters to their base form so words like
+    // "cafe", "jalapeno", "puree" degrade gracefully rather than losing
+    // letters entirely in the allowlist sweep below.
+    .replace(/[\u00C0-\u00C5]/g, 'A').replace(/[\u00E0-\u00E5]/g, 'a')
+    .replace(/[\u00C8-\u00CB]/g, 'E').replace(/[\u00E8-\u00EB]/g, 'e')
+    .replace(/[\u00CC-\u00CF]/g, 'I').replace(/[\u00EC-\u00EF]/g, 'i')
+    .replace(/[\u00D2-\u00D6]/g, 'O').replace(/[\u00F2-\u00F6]/g, 'o')
+    .replace(/[\u00D9-\u00DC]/g, 'U').replace(/[\u00F9-\u00FC]/g, 'u')
+    .replace(/\u00D1/g, 'N').replace(/\u00F1/g, 'n')
+    .replace(/\u00C7/g, 'C').replace(/\u00E7/g, 'c')
+    .replace(/\u00DD/g, 'Y').replace(/[\u00FD\u00FF]/g, 'y')
+    .replace(/\u00DF/g, 'ss')
+    // Strip emoji / pictographs / dingbats (but NOT the geometric shapes
+    // block U+25A0-U+25FF, which contains our pill glyphs)
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+    .replace(/[\u2600-\u26FF\u2700-\u27BF]/g, '')
+    // Drop remaining control characters except newline (U+000A) and tab
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+    // Allowlist catch-all: keep tab, newline, printable ASCII, and the
+    // geometric-shapes block (our pill glyphs). Anything else still present
+    // after the targeted normalizations above — CJK, exotic symbols,
+    // unanticipated model output — is dropped so it can never silently
+    // break the display.
+    .replace(/[^\x09\x0A\x20-\x7E\u25A0-\u25FF]/g, '')
+}
+
 async function setContent(text: string): Promise<void> {
-  const display = text.length <= MAX_CONTENT_CHARS
-    ? text
-    : text.slice(0, MAX_CONTENT_CHARS) + '...'
+  const clean = sanitizeForDisplay(text)
+  const display = clean.length <= MAX_CONTENT_CHARS
+    ? clean
+    : clean.slice(0, MAX_CONTENT_CHARS) + '...'
   await bridge.textContainerUpgrade(
     new TextContainerUpgrade({ containerID: 1, containerName: 'content', content: display }),
   )
