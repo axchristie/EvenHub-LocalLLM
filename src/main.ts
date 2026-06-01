@@ -430,18 +430,42 @@ async function chatCompletion(history: Message[], model: string): Promise<string
   })
   if (!res.ok) throw new Error(`Chat ${res.status} ${res.statusText}`)
   const text = await res.text()
+  console.log(`[chat] raw response length: ${text.length}`)
+
+  // Streaming (SSE) response
   if (text.trimStart().startsWith('data:')) {
-    return text
+    const parsed = text
       .split('\n')
-      .filter(line => line.startsWith('data: ') && line !== 'data: [DONE]')
+      .map(l => l.trim())
+      // Accept "data:" with or without a trailing space; skip the [DONE] sentinel
+      .filter(l => l.startsWith('data:') && !l.includes('[DONE]'))
       .map(line => {
-        try { return JSON.parse(line.slice(6)).choices?.[0]?.delta?.content ?? '' }
-        catch { return '' }
+        try {
+          const json = JSON.parse(line.replace(/^data:\s*/, ''))
+          const choice = json.choices?.[0]
+          // Prefer streamed delta content; fall back to message content,
+          // then to reasoning fields some reasoning models use
+          return choice?.delta?.content
+              ?? choice?.message?.content
+              ?? choice?.delta?.reasoning_content
+              ?? choice?.delta?.reasoning
+              ?? ''
+        } catch { return '' }
       })
       .join('')
+    console.log(`[chat] parsed streamed reply length: ${parsed.length}`)
+    return parsed
   }
+
+  // Non-streaming JSON response
   try {
-    return JSON.parse(text).choices?.[0]?.message?.content ?? 'No content in response'
+    const json = JSON.parse(text)
+    const choice = json.choices?.[0]
+    const content = choice?.message?.content
+                 ?? choice?.message?.reasoning_content
+                 ?? ''
+    console.log(`[chat] parsed non-stream reply length: ${content.length}`)
+    return content
   } catch {
     throw new Error('Parse error')
   }
@@ -532,17 +556,25 @@ async function processQueryAudio(): Promise<void> {
 
     conversationHistory.push({ role: 'user', content: transcript })
     const reply = await chatCompletion(conversationHistory, activeOption!.model)
-    conversationHistory.push({ role: 'assistant', content: reply })
+
+    // Guard against empty replies. An empty string passed to
+    // textContainerUpgrade is ignored by the firmware, leaving the stale
+    // menu label on screen. Show an explicit message instead so the user
+    // is never left staring at unchanged text.
+    const safeReply = reply.trim() ||
+      'No readable response.\nThe model may have returned\nan empty or unsupported reply.\nTap to try again.'
+
+    conversationHistory.push({ role: 'assistant', content: safeReply })
 
     stopPillAnimation()
     state = 'response'
 
     if (activeOption!.multiTurn) {
-      await setContent(reply)
+      await setContent(safeReply)
       await setHud('● Tap · ▲ Scroll up · ●● Exit')
     } else {
-      if (activeOption!.saveChat) await saveChat(conversationHistory, activeOption!.model)
-      await setContent(reply)
+      if (activeOption!.saveChat && reply.trim()) await saveChat(conversationHistory, activeOption!.model)
+      await setContent(safeReply)
       await setHud('● Tap · ●● Exit')
     }
   } catch (err) {
