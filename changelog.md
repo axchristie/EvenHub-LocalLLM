@@ -1,8 +1,8 @@
 # Changelog
 
-## May 31, 2026
+## June 5, 2026
 
-v0.7.2
+v0.7.3
 
 - Test Connection in settings: check endpoints and API key before use.
 - Clearer error messages and an animated processing indicator.

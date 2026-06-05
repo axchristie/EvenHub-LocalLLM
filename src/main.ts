@@ -192,18 +192,22 @@ function sanitizeForDisplay(text: string): string {
     .replace(/\u00C7/g, 'C').replace(/\u00E7/g, 'c')
     .replace(/\u00DD/g, 'Y').replace(/[\u00FD\u00FF]/g, 'y')
     .replace(/\u00DF/g, 'ss')
-    // Strip emoji / pictographs / dingbats (but NOT the geometric shapes
-    // block U+25A0-U+25FF, which contains our pill glyphs)
+    // Strip emoji / pictographs / dingbats (but NOT the box-drawing /
+    // block-elements / geometric-shapes span U+2500-U+25FF, preserved below)
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u2600-\u26FF\u2700-\u27BF]/g, '')
     // Drop remaining control characters except newline (U+000A) and tab
     .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
     // Allowlist catch-all: keep tab, newline, printable ASCII, and the
-    // geometric-shapes block (our pill glyphs). Anything else still present
-    // after the targeted normalizations above — CJK, exotic symbols,
-    // unanticipated model output — is dropped so it can never silently
-    // break the display.
-    .replace(/[^\x09\x0A\x20-\x7E\u25A0-\u25FF]/g, '')
+    // Box Drawing + Block Elements + Geometric Shapes span (U+2500-U+25FF).
+    // These render correctly on the G2 firmware (confirmed in use): the
+    // pill glyphs (\u25A0 \u25B6 \u25CF \u25B2), divider lines (\u2500),
+    // and progress-bar blocks (\u2588 full, \u2591 light shade) used by
+    // dashboard-style pipeline output all live here. Anything else still
+    // present after the targeted normalizations above — CJK, exotic
+    // symbols, emoji, unanticipated model output — is dropped so it can
+    // never silently break the display.
+    .replace(/[^\x09\x0A\x20-\x7E\u2500-\u25FF]/g, '')
 }
 
 async function setContent(text: string): Promise<void> {
