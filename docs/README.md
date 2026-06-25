@@ -228,7 +228,8 @@ Launch the app from the Even Realities iPhone app. From that point, everything i
 | Speak (auto) | Menu listening starts immediately — speak a menu option |
 | Silence (~1.5s) | Recording stops automatically |
 | Single tap | Follow up (multi-turn) / return to menu (single-turn) |
-| Scroll up | Return to main menu from a response |
+| Scroll down | Next page of a long reply |
+| Scroll up | Previous page of a long reply, or back to the menu from the first page |
 | Double-tap | Exit the app |
 
 The app adapts automatically to background noise — it measures ambient sound levels at the start of each recording and sets the silence threshold relative to your environment. It works in quiet rooms and noisy environments like moving cars.
