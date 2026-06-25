@@ -38,6 +38,7 @@ const DEFAULT_MIN_SPEECH_CHUNKS  = 3
 const DEFAULT_CALIBRATION_CHUNKS = 10
 const MIN_CHUNKS                 = 10
 const MAX_CONTENT_CHARS          = 1900   // textContainerUpgrade limit is 2000
+const PAGE_CHARS                 = MAX_CONTENT_CHARS  // each response page stays under that limit
 
 // Layout - 576x288 canvas
 const CONTENT_HEIGHT = 220
@@ -59,6 +60,13 @@ let menuOptions: Record<string, MenuOptionConfig> = {}
 let state: AppState = 'unconfigured'
 let activeOption: MenuOptionConfig | null = null
 let conversationHistory: Message[] = []
+
+// Pagination for long replies. The content container scrolls natively up to
+// the ~2000-char textContainerUpgrade limit; replies longer than one page are
+// split here and walked with scroll gestures. Empty array === single-screen
+// behavior (menu/labels/errors), so non-response screens are unaffected.
+let responsePages: string[] = []
+let currentPage   = 0
 
 const pcmChunks: Uint8Array[] = []
 let silentChunkCount  = 0
@@ -210,14 +218,40 @@ function sanitizeForDisplay(text: string): string {
     .replace(/[^\x09\x0A\x20-\x7E\u2500-\u25FF]/g, '')
 }
 
+// Split already-sanitized text into pages no longer than `maxChars`. Breaks on
+// the last newline within the window, else the last space, else a hard cut for
+// a single oversized token; leading whitespace is trimmed off each subsequent
+// page. Text that already fits returns as a single page, so short replies are
+// unchanged. Pure (no SDK) and unit-testable.
+function paginate(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text]
+  const pages: string[] = []
+  let rest = text
+  while (rest.length > maxChars) {
+    let cut = rest.lastIndexOf('\n', maxChars)
+    if (cut < maxChars * 0.5) cut = rest.lastIndexOf(' ', maxChars) // avoid tiny pages
+    if (cut <= 0) cut = maxChars                                     // no break point -> hard cut
+    pages.push(rest.slice(0, cut).trimEnd())
+    rest = rest.slice(cut).replace(/^\s+/, '')
+  }
+  if (rest.length) pages.push(rest)
+  return pages
+}
+
+// Raw content write — assumes the caller already sanitized and length-bounded
+// the text (response pages do; they are paginated post-sanitize at <= PAGE_CHARS).
+async function pushContent(text: string): Promise<void> {
+  await bridge.textContainerUpgrade(
+    new TextContainerUpgrade({ containerID: 1, containerName: 'content', content: text }),
+  )
+}
+
 async function setContent(text: string): Promise<void> {
   const clean = sanitizeForDisplay(text)
   const display = clean.length <= MAX_CONTENT_CHARS
     ? clean
     : clean.slice(0, MAX_CONTENT_CHARS) + '...'
-  await bridge.textContainerUpgrade(
-    new TextContainerUpgrade({ containerID: 1, containerName: 'content', content: display }),
-  )
+  await pushContent(display)
 }
 
 async function setHud(text: string): Promise<void> {
@@ -228,6 +262,40 @@ async function setHud(text: string): Promise<void> {
 
 function listeningHud(): string {
   return cfg?.manualStop ? '■ Listening  ● Stop' : '■ Listening'
+}
+
+function resetPagination(): void {
+  responsePages = []
+  currentPage   = 0
+}
+
+// HUD line for the response screen. Single-page replies keep the exact strings
+// the app used before (no regression). Multi-page replies gain a `p/n` counter
+// plus the contextual scroll affordance. ▲ ▼ ● glyphs live in the firmware's
+// known-good Geometric Shapes range (see sanitizeForDisplay).
+function responseHud(i: number, n: number): string {
+  if (n <= 1) {
+    return activeOption?.multiTurn
+      ? '● Tap · ▲ Scroll up · ●● Exit'
+      : '● Tap · ●● Exit'
+  }
+  const pos = `${i + 1}/${n}`
+  if (i < n - 1 && i > 0) return `${pos}  ▲▼ Pages · ●● Exit`
+  if (i < n - 1)          return `${pos}  ▼ More · ●● Exit`
+  return `${pos}  ▲ Back · ● Tap · ●● Exit`   // last page
+}
+
+// Paginate a reply and show the first page. Pagination is display-only — the
+// full reply still lives in conversationHistory and is what saveChat persists.
+async function showResponse(text: string): Promise<void> {
+  responsePages = paginate(sanitizeForDisplay(text), PAGE_CHARS)
+  currentPage   = 0
+  await renderResponsePage()
+}
+
+async function renderResponsePage(): Promise<void> {
+  await pushContent(responsePages[currentPage] ?? '')
+  await setHud(responseHud(currentPage, responsePages.length))
 }
 
 // Item 3: Processing animation. Fixed-width frames keep "Processing"
@@ -444,6 +512,7 @@ if (existingCfg) {
 async function startMenuListening(): Promise<void> {
   stopPillAnimation()
   resetSession()
+  resetPagination()
   activeOption = null
   conversationHistory = []
   state = 'menu_listening'
@@ -455,6 +524,7 @@ async function startMenuListening(): Promise<void> {
 async function startQueryListening(): Promise<void> {
   stopPillAnimation()
   resetAudio()
+  resetPagination()
   state = 'query_listening'
   await setContent(activeOption!.label)
   await setHud(listeningHud())
@@ -630,14 +700,12 @@ async function processQueryAudio(): Promise<void> {
     stopPillAnimation()
     state = 'response'
 
-    if (activeOption!.multiTurn) {
-      await setContent(safeReply)
-      await setHud('● Tap · ▲ Scroll up · ●● Exit')
-    } else {
-      if (activeOption!.saveChat && reply.trim()) await saveChat(conversationHistory, activeOption!.model)
-      await setContent(safeReply)
-      await setHud('● Tap · ●● Exit')
+    if (!activeOption!.multiTurn && activeOption!.saveChat && reply.trim()) {
+      await saveChat(conversationHistory, activeOption!.model)
     }
+    // showResponse paginates and sets the HUD (page indicator + nav hints,
+    // multi-turn aware). Single-page replies keep the prior behavior exactly.
+    await showResponse(safeReply)
   } catch (err) {
     stopPillAnimation()
     state = 'response'
@@ -746,14 +814,25 @@ const unsubscribe = bridge.onEvenHubEvent(async event => {
     return
   }
 
-  // Scroll-bottom does nothing — user must tap to proceed
+  // Scroll down: advance to the next response page. No-op when there is no
+  // next page or we are not on a response (empty responsePages => unchanged).
   if (textType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+    if (state === 'response' && currentPage < responsePages.length - 1) {
+      currentPage++
+      await renderResponsePage()
+    }
     return
   }
 
-  // Scroll up: return to menu from response
+  // Scroll up: go to the previous page, or return to the menu from the first
+  // page (preserving the prior "scroll up from a response -> menu" behavior).
   if (state === 'response' && textType === OsEventTypeList.SCROLL_TOP_EVENT) {
-    await returnToMenu()
+    if (currentPage > 0) {
+      currentPage--
+      await renderResponsePage()
+    } else {
+      await returnToMenu()
+    }
     return
   }
 
